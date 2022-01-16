@@ -1,18 +1,23 @@
 import math
+import operator
 from random import randint
 import numpy as np
 from enum import Enum
-import operator
 from matplotlib import pyplot as plt
+from shapely import geometry
 
-# 定义全局变量：地图中节点的像素大小
+# 定义全局变量
 CELL_WIDTH = 1  # 单元格宽度
 CELL_HEIGHT = 1  # 单元格长度
-BLOCK_NUM = 150  # 地图中的障碍物数量
+BLOCK_NUM = 60  # 地图中的障碍物数量
+BLOCK_BIG_NUM = 10  # 地图中大障碍物数量
+BLOCK_BORD = 50  # 地图中障碍块最大边长
+V0 = 15  # 初速度
+COST_RATE = 0.9  # 转弯之后的速度变为原来的0.9  如果损失设置太小方向会转不过来
 
 
 def draw_path(mapsize, blocklist, routelist, turnlist):
-    plt.figure(figsize=(mapsize[0],mapsize[1]))  # 为了防止x,y轴间隔不一样长，影响最后的表现效果，所以手动设定等长
+    plt.figure(figsize=(mapsize[0], mapsize[1]))  # 为了防止x,y轴间隔不一样长，影响最后的表现效果，所以手动设定等长
     plt.xlim(-1, mapsize[0])
     plt.ylim(-1, mapsize[1])
     my_x_ticks = np.arange(0, mapsize[0], 1)
@@ -20,15 +25,18 @@ def draw_path(mapsize, blocklist, routelist, turnlist):
     plt.xticks(my_x_ticks)  # 我理解为竖线的位置与间隔
     plt.yticks(my_y_ticks)
     plt.grid(True)  # 开启栅格
-    routelist = np.array(routelist)
-    blocklist = np.array(blocklist)
-    turnlist = np.array(turnlist)
-    plt.plot(routelist[:, 0], routelist[:, 1], linewidth=3)
+    sub=np.array([(0.5,0.5)])
+    # routelist = np.array(routelist)
+    blocklist = np.subtract(np.array(blocklist),sub)
+    turnlist = np.subtract(np.array(turnlist),sub)
+    # plt.plot(routelist[:, 0], routelist[:, 1], linewidth=3)
     plt.plot(turnlist[:, 0], turnlist[:, 1], linewidth=3)
     plt.scatter(blocklist[:, 0], blocklist[:, 1], s=2700, c='k', marker='s')
     plt.title("grid map simulation ")
 
-    plt.show()
+    # plt.show()
+    plt.savefig('result.png',dpi=100)
+    plt.clf()
 
 
 # 由两个点求得直线公式：AX+BY+C=0
@@ -43,8 +51,9 @@ def get_line(node1, node2):
 def block_exist(node1, node2, blocklist):
     for cur_node in blocklist:
         # 障碍物夹在两个点中间
-        if cur_node[0] in range(min(node1[0], node2[0]), max(node1[0], node2[0])+1) and cur_node[1] in range(
-                min(node1[1], node2[1]), max(node1[1], node2[1])+1):#range左闭右开
+        if cur_node[0] in range(int(min(node1[0], node2[0])), int(max(node1[0], node2[0]) + 1)) and cur_node[
+            1] in range(
+            int(min(node1[1], node2[1])), int(max(node1[1], node2[1]) + 1)):  # range左闭右开
             # 相交返回True
             # print(node1, node2, cur_node)
             A, B, C = get_line(node1, node2)
@@ -56,7 +65,7 @@ def block_exist(node1, node2, blocklist):
             weights = np.array((A, B, C))
             # print("judge", np.dot(peaks[0], weights), np.dot(peaks[1], weights), np.dot(peaks[2], weights),
             #       np.dot(peaks[3], weights))
-            #四个顶点代入直线是否同号
+            # 四个顶点代入直线是否同号
             if np.dot(peaks[0], weights) <= 0 and np.dot(peaks[1], weights) <= 0 and np.dot(peaks[2],
                                                                                             weights) <= 0 and np.dot(
                 peaks[3], weights) <= 0 or \
@@ -68,6 +77,20 @@ def block_exist(node1, node2, blocklist):
                 return True
 
     return False
+
+
+def if_inPoly(polygon, Points):
+    line = geometry.LineString(polygon)
+    point = geometry.Point(Points)
+    polygon = geometry.Polygon(line)
+    return polygon.contains(point)
+
+
+def init_orientation(snode, enode):
+    x_ori = 1 if enode[0] - snode[0] > 0 else 0 if enode[0] - snode[0] == 0 else -1
+    y_ori = 1 if enode[1] - snode[1] > 0 else 0 if enode[1] - snode[1] == 0 else -1
+    print(x_ori, y_ori)
+    return (x_ori, y_ori)
 
 
 class Color(Enum):
@@ -108,11 +131,16 @@ class Map(object):
 
 
 class Node(object):
-    def __init__(self, pos):
+    def __init__(self, pos, offset):
         self.pos = pos
+        self.offset = offset
         self.father = None
         self.gvalue = 0
         self.fvalue = 0
+        self.velocity = None
+
+    def set_vel(self, vel):
+        self.velocity = vel
 
     def compute_fx(self, enode, father):
         if father == None:
@@ -121,18 +149,25 @@ class Node(object):
         gx_father = father.gvalue
         # 采用欧式距离计算父节点到当前节点的距离
         gx_f2n = math.sqrt((father.pos[0] - self.pos[0]) ** 2 + (father.pos[1] - self.pos[1]) ** 2)
-        gvalue = gx_f2n + gx_father
-
-        hx_n2enode = math.sqrt((self.pos[0] - enode.pos[0]) ** 2 + (self.pos[1] - enode.pos[1]) ** 2)
-        fvalue = gvalue + hx_n2enode  #a*算法的启发函数
-        return gvalue, fvalue
+        gvalue = gx_f2n + gx_father  # gvalue代表累加距离
+        # print("father:", father.pos, father.offset, father.velocity, "cur:", self.pos, self.offset, self.velocity)
+        hx_n2enode = math.sqrt(
+            (self.pos[0] - enode.pos[0]) ** 2 + (self.pos[1] - enode.pos[1]) ** 2)  # hx_n2enode代表当前点距离目标点的距离
+        fvalue = gvalue + hx_n2enode  # 计算总距离
+        if self.offset != father.offset:  # 如果当前节点需要改变方向，则速度损失，如果不需要改变方向，则保持原速度
+            self.velocity = father.velocity * COST_RATE
+        else:
+            self.velocity = father.velocity
+        fvalue /= self.velocity  # fvalue代表所用时间 时间=走过距离+估算的欧式距离/当前速度
+        # print(self.velocity,fvalue)
+        return gvalue, fvalue, (self.pos[0] - father.pos[0], self.pos[1] - father.pos[1]), self.velocity
 
     def set_fx(self, enode, father):
-        self.gvalue, self.fvalue = self.compute_fx(enode, father)
+        self.gvalue, self.fvalue, self.offset, self.velocity = self.compute_fx(enode, father)
         self.father = father
 
     def update_fx(self, enode, father):
-        gvalue, fvalue = self.compute_fx(enode, father)
+        gvalue, fvalue, self.offset, self.velocity = self.compute_fx(enode, father)
         if fvalue < self.fvalue:
             self.gvalue, self.fvalue = gvalue, fvalue
             self.father = father
@@ -142,8 +177,9 @@ class AStar(object):
     def __init__(self, mapsize, pos_sn, pos_en):
         self.mapsize = mapsize  # 表示地图的投影大小，并非屏幕上的地图像素大小
         self.openlist, self.closelist, self.blocklist = [], [], []
-        self.snode = Node(pos_sn)  # 用于存储路径规划的起始节点
-        self.enode = Node(pos_en)  # 用于存储路径规划的目标节点
+        self.snode = Node(pos_sn, init_orientation(pos_sn, pos_en))  # 用于存储路径规划的起始节点
+        self.snode.set_vel(V0)  # 设置初始速度
+        self.enode = Node(pos_en, None)  # 用于存储路径规划的目标节点
         self.cnode = self.snode  # 用于存储当前搜索到的节点
 
     def run(self):
@@ -217,42 +253,77 @@ class AStar(object):
             # 判断是否在地图范围内,超出范围跳过
             if x_new < 0 or x_new > self.mapsize[0] - 1 or y_new < 0 or y_new > self.mapsize[1]:
                 continue
-            nodes_neighbor.append(Node(pos_new))
+            nodes_neighbor.append(Node(pos_new, os))
 
         return nodes_neighbor
 
 
 def get_turn(routelist):
-    node1, node2, turnlist = routelist[0], routelist[1], []
+    node1, node2, turnlist, indexlist = routelist[0], routelist[1], [], []
     if len(routelist) <= 2: return
     turnlist.append(routelist[0])  # 加入起始点
+    indexlist.append(0)
+    i = 1
     for cur_node in routelist[2:]:
         # 判断第三个点是否与前两个点共线
         if node1[0] * node2[1] - node2[0] * node1[1] + node2[0] * cur_node[1] - cur_node[0] * node2[1] + cur_node[0] * \
                 node1[1] - cur_node[1] * node1[0] != 0:
             # 如果不共线,中间点就是拐点,重新定义启示两个点
             turnlist.append(node2)
+            indexlist.append(i)
             node1 = node2
             node2 = cur_node
         else:  # 如果共线 记录共线的最末点
             node2 = cur_node
+        i += 1  # 索引值
     if routelist[len(routelist) - 1] not in turnlist: turnlist.append(routelist[len(routelist) - 1])  # 加入末尾点
-    print("turnlist",turnlist)
-    return turnlist
+    print("turnlist", turnlist)
+    indexlist.append(len(routelist) - 1)
+    return turnlist, indexlist
 
 
-def reduce_turn(turnlist, blocklist):
-    # 首先判断turn可不可以直接连线，中间也没有障碍物的
+# 获得两条线之间的焦点
+def get_crosspoint(line1, line2):
+    a0, b0, c0 = line1
+    a1, b1, c1 = line2
+    D = a0 * b1 - a1 * b0
+    if D == 0:
+        return None
+    x = (b0 * c1 - b1 * c0) / D
+    y = (a1 * c0 - a0 * c1) / D
+    return x, y
+
+
+def find_new_turn(routelist, blocklist):
+    turnlist, indexlist = get_turn(routelist)
+    # print(indexlist)
     i = 0
-    while i + 3 <= len(turnlist):
-        node1, mid, node2 = turnlist[i:i + 3]
-        # print(i, node1, mid, node2)
-        if block_exist(node1, node2, blocklist) == False:
-            # print(i, "no block")
-            turnlist.remove(mid)
-        else:
+    while i + 2 < len(indexlist):
+        G1, G2, G3 = turnlist[i], turnlist[i + 1], turnlist[i + 2]
+        # 判断相隔拐点之间是否联通: 联通->不做任何操作
+        if block_exist(G1, G3, blocklist) == True:
+            # 不连通->寻找新的拐点
+            G1toG2 = routelist[indexlist[i] + 1: indexlist[i + 1] + 1]
+            G2toG3 = routelist[indexlist[i + 1]: indexlist[i + 2]]
+            node1, node3 = [], []
+            # 如果没有p1=拐点
+            for p1 in G1toG2:
+                if block_exist(p1, G3, blocklist) == False:
+                    node1 = p1
+                    break
+            for p3 in list(reversed(G2toG3)):
+                if block_exist(p3, G1, blocklist) == False:
+                    node3 = p3
+            if node1 and node3:
+                turnlist[i + 1] = get_crosspoint(get_line(node1, G3), get_line(node3, G1))
+
+            # print(i, G1toG2, list(reversed(G2toG3)), turnlist[i + 1])
             i += 1
-    print("turnlist after reduction:",turnlist)
+        else:
+            turnlist.remove(G2)
+            indexlist.remove(indexlist[i + 1])
+    print("find_new_turn:", turnlist)
+    return turnlist
 
 
 def main():
@@ -260,14 +331,14 @@ def main():
     pos_snode = tuple(map(int, input('请输入起点坐标，以逗号隔开：').split(',')))
     pos_enode = tuple(map(int, input('请输入终点坐标，以逗号隔开：').split(',')))
     myAstar = AStar(mapsize, pos_snode, pos_enode)
-    blocklist = gen_blocks(mapsize[0], mapsize[1], pos_snode, pos_enode)
+    # blocklist = gen_blocks(mapsize[0], mapsize[1], pos_snode, pos_enode) #生成密且小的障碍物
+    blocklist = gen_blocks_big(mapsize[0], mapsize[1], pos_snode, pos_enode)  # 生成少且大的障碍物
     myAstar.setBlock(blocklist)
-    routelist = []  # 记录搜索到的最优路径
     if myAstar.run() == 1:
         routelist = myAstar.get_minroute()
         print(routelist)
-        turnlist = get_turn(routelist)
-        reduce_turn(turnlist, blocklist)
+        # turnlist, indexlist = get_turn(routelist)
+        turnlist = find_new_turn(routelist, blocklist)
         draw_path(mapsize, blocklist, routelist, turnlist)
     else:
         print('路径规划失败！')
@@ -292,6 +363,35 @@ def gen_blocks(width, height, snode, enode):
 
     return blocklist
 
+
+def gen_blocks_big(width, height, snode, enode):
+    '''
+    随机生成障碍物
+    :param width: 地图宽度
+    :param height: 地图高度
+    :return:返回障碍物坐标集合
+    '''
+    i, blocklist = 0, []
+    while (i < BLOCK_BIG_NUM):
+        block = (randint(0, width - 1), randint(0, height - 1))
+        bord = randint(0, BLOCK_BORD)
+        if bord % 2 == 0: continue
+        if block[0] - bord / 2 >= 0 and block[0] + bord / 2 <= width \
+                and block[1] - bord / 2 >= 0 and block[1] + bord / 2 <= height:
+            rect = [
+                (block[0] - (bord / 2 + CELL_WIDTH), block[1] - (bord / 2 + CELL_HEIGHT)),
+                (block[0] + (bord / 2 + CELL_WIDTH), block[1] - (bord / 2 + CELL_HEIGHT)),
+                (block[0] - (bord / 2 + CELL_WIDTH), block[1] + (bord / 2 + CELL_HEIGHT)),
+                (block[0] + (bord / 2 + CELL_WIDTH), block[1] + (bord / 2 + CELL_HEIGHT))
+            ]
+            if if_inPoly(rect, snode) or if_inPoly(rect, snode):
+                continue
+            else:
+                for x in range(int(block[0] - bord / 2), int(block[0] + bord / 2 + 1)):
+                    for y in range(int(block[1] - bord / 2), int(block[1] + bord / 2 + 1)):
+                        blocklist.append((x, y))
+                i = i + 1
+    return blocklist
 
 
 if __name__ == '__main__':
